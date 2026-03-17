@@ -187,10 +187,11 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "configuration" | "instructions" | "skills" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configuration";
+  if (value === "instructions") return value;
   if (value === "skills") return value;
   if (value === "budget") return value;
   if (value === "runs") return value;
@@ -580,13 +581,15 @@ export function AgentDetail() {
     const canonicalTab =
       activeView === "configuration"
         ? "configuration"
-        : activeView === "skills"
-          ? "skills"
-          : activeView === "runs"
-            ? "runs"
-            : activeView === "budget"
-              ? "budget"
-            : "dashboard";
+        : activeView === "instructions"
+          ? "instructions"
+          : activeView === "skills"
+            ? "skills"
+            : activeView === "runs"
+              ? "runs"
+              : activeView === "budget"
+                ? "budget"
+              : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -701,6 +704,8 @@ export function AgentDetail() {
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
+      } else if (activeView === "instructions") {
+        crumbs.push({ label: "Instructions" });
       } else if (activeView === "skills") {
         crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
@@ -862,6 +867,7 @@ export function AgentDetail() {
             items={[
               { value: "dashboard", label: "Dashboard" },
               { value: "configuration", label: "Configuration" },
+              { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
@@ -952,6 +958,13 @@ export function AgentDetail() {
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
           updatePermissions={updatePermissions}
+        />
+      )}
+
+      {activeView === "instructions" && (
+        <InstructionsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
         />
       )}
 
@@ -1423,6 +1436,124 @@ function ConfigurationTab({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---- Instructions Tab ---- */
+
+function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: string }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const instructionsPath =
+    typeof agent.adapterConfig?.instructionsFilePath === "string" && agent.adapterConfig.instructionsFilePath.trim().length > 0
+      ? agent.adapterConfig.instructionsFilePath
+      : null;
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.agents.instructionsFile(agent.id),
+    queryFn: () => agentsApi.getInstructionsFile(agent.id, companyId),
+    enabled: Boolean(instructionsPath),
+    retry: false,
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: (content: string) => agentsApi.updateInstructionsFile(agent.id, { content }, companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id) });
+      setEditing(false);
+      setSaveError(null);
+    },
+    onError: (err) => {
+      setSaveError(err instanceof Error ? err.message : "Failed to save");
+    },
+  });
+
+  function startEditing() {
+    setDraft(data?.content ?? "");
+    setSaveError(null);
+    setEditing(true);
+  }
+
+  function cancelEditing() {
+    setEditing(false);
+    setSaveError(null);
+  }
+
+  if (!instructionsPath) {
+    return (
+      <div className="border border-border rounded-lg p-6 text-center space-y-2">
+        <p className="text-sm text-muted-foreground">
+          No instructions file path is configured for this agent.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Set an instructions file path in the Configuration tab to enable viewing and editing.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <h3 className="text-sm font-medium">Instructions file</h3>
+          <p className="text-xs text-muted-foreground font-mono break-all">{data?.path ?? instructionsPath}</p>
+        </div>
+        {!editing && data?.content != null && (
+          <Button variant="outline" size="sm" onClick={startEditing}>
+            Edit
+          </Button>
+        )}
+      </div>
+
+      {isLoading && (
+        <div className="border border-border rounded-lg p-6 flex items-center justify-center">
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          <span className="ml-2 text-sm text-muted-foreground">Loading file...</span>
+        </div>
+      )}
+
+      {error && !isLoading && (
+        <div className="border border-destructive/30 rounded-lg p-4">
+          <p className="text-sm text-destructive">
+            {error instanceof Error ? error.message : "Failed to load instructions file."}
+          </p>
+        </div>
+      )}
+
+      {!isLoading && !error && data && !editing && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="max-h-[70vh] overflow-y-auto p-4">
+            <MarkdownBody>{data.content}</MarkdownBody>
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <div className="space-y-3">
+          <textarea
+            className="w-full min-h-[50vh] font-mono text-sm bg-muted/30 border border-border rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck={false}
+          />
+          {saveError && (
+            <p className="text-sm text-destructive">{saveError}</p>
+          )}
+          <div className="flex items-center gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={cancelEditing} disabled={saveMutation.isPending}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => saveMutation.mutate(draft)} disabled={saveMutation.isPending}>
+              {saveMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

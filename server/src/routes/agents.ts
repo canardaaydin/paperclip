@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
@@ -1079,6 +1080,112 @@ export function agentRoutes(db: Db) {
       adapterConfigKey,
       path: pathValue,
     });
+  });
+
+  /* ---- Instructions file content read/write ---- */
+
+  function resolveInstructionsFileAbsolutePath(
+    adapterConfig: Record<string, unknown>,
+  ): string | null {
+    const instructionsFilePath = asNonEmptyString(adapterConfig.instructionsFilePath);
+    if (!instructionsFilePath) return null;
+    if (path.isAbsolute(instructionsFilePath)) return instructionsFilePath;
+    const cwd = asNonEmptyString(adapterConfig.cwd);
+    if (cwd && path.isAbsolute(cwd)) return path.resolve(cwd, instructionsFilePath);
+    return null;
+  }
+
+  router.get("/agents/:id/instructions-file", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const absPath = resolveInstructionsFileAbsolutePath(adapterConfig);
+    if (!absPath) {
+      res.status(404).json({ error: "No instructions file path configured for this agent" });
+      return;
+    }
+
+    try {
+      const stat = await fs.stat(absPath);
+      if (!stat.isFile()) {
+        res.status(404).json({ error: "Instructions path does not point to a file" });
+        return;
+      }
+      if (stat.size > 1024 * 1024) {
+        res.status(422).json({ error: "Instructions file exceeds 1 MB size limit" });
+        return;
+      }
+      const content = await Promise.race([
+        fs.readFile(absPath, "utf8"),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error("timed out reading instructions file")), 3000),
+        ),
+      ]);
+      res.json({ path: absPath, content });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        res.status(404).json({ error: "Instructions file not found on disk", path: absPath });
+        return;
+      }
+      res.status(500).json({ error: "Failed to read instructions file" });
+    }
+  });
+
+  router.put("/agents/:id/instructions-file", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    await assertCanManageInstructionsPath(req, agent);
+
+    const content = typeof req.body?.content === "string" ? req.body.content : null;
+    if (content === null) {
+      res.status(400).json({ error: "Request body must include a 'content' string field" });
+      return;
+    }
+    if (Buffer.byteLength(content, "utf8") > 1024 * 1024) {
+      res.status(422).json({ error: "Content exceeds 1 MB size limit" });
+      return;
+    }
+
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const absPath = resolveInstructionsFileAbsolutePath(adapterConfig);
+    if (!absPath) {
+      res.status(404).json({ error: "No instructions file path configured for this agent" });
+      return;
+    }
+
+    try {
+      await fs.mkdir(path.dirname(absPath), { recursive: true });
+      await fs.writeFile(absPath, content, "utf8");
+    } catch {
+      res.status(500).json({ error: "Failed to write instructions file" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.instructions_file_updated",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { path: absPath },
+    });
+
+    res.json({ path: absPath, ok: true });
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

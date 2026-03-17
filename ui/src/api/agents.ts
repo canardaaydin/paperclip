@@ -146,6 +146,10 @@ export const agentsApi = {
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  getInstructionsFile: (id: string, companyId?: string) =>
+    api.get<{ path: string; content: string }>(agentPath(id, companyId, "/instructions-file")),
+  updateInstructionsFile: (id: string, data: { content: string }, companyId?: string) =>
+    api.put<{ path: string; ok: true }>(agentPath(id, companyId, "/instructions-file"), data),
 };
 
 export interface AvailableSkill {
