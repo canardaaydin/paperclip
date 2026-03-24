@@ -70,6 +70,8 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  googleDriveClientId: string;
+  googleDriveClientSecret: string;
 }
 
 export function loadConfig(): Config {
@@ -252,5 +254,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    googleDriveClientId: process.env.GOOGLE_DRIVE_CLIENT_ID ?? "",
+    googleDriveClientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "",
   };
 }

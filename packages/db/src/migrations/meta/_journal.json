@@ -267,6 +267,13 @@
       "when": 1773756922363,
       "tag": "0037_friendly_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1773937359227,
+      "tag": "0038_soft_toad_men",
+      "breakpoints": true
     }
   ]
 }

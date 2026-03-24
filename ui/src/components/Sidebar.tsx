@@ -9,6 +9,8 @@ import {
   SquarePen,
   Network,
   Settings,
+  HardDrive,
+  MessageSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -98,6 +100,8 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/drive" label="Drive" icon={HardDrive} />
+          <SidebarNavItem to="/chat" label="Chat" icon={MessageSquare} />
         </SidebarSection>
 
         <SidebarProjects />

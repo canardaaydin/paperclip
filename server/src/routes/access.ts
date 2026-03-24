@@ -138,7 +138,9 @@ function resolvePaperclipSkillsDir(): string | null {
 
 /** Parse YAML frontmatter from a SKILL.md file to extract the description. */
 function parseSkillFrontmatter(markdown: string): { description: string } {
-  const match = markdown.match(/^---\n([\s\S]*?)\n---/);
+  // Normalize CRLF → LF so regexes work regardless of line-ending style
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const match = normalized.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return { description: "" };
   const yaml = match[1];
   // Extract description — handles both single-line and multi-line YAML values

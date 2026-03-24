@@ -33,6 +33,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
@@ -1186,6 +1187,183 @@ export function agentRoutes(db: Db) {
     });
 
     res.json({ path: absPath, ok: true });
+  });
+
+  /* ---- Agent home files (HEARTBEAT.md, SOUL.md, TOOLS.md, etc.) ---- */
+
+  const ALLOWED_HOME_FILE_RE = /^[a-zA-Z0-9_-]+\.md$/;
+
+  function resolveAgentHomeDir(agent: { id: string; adapterConfig: unknown }): string {
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const cwd = asNonEmptyString(adapterConfig.cwd);
+    if (cwd && path.isAbsolute(cwd)) return cwd;
+    return resolveDefaultAgentWorkspaceDir(agent.id);
+  }
+
+  router.get("/agents/:id/home-files", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const homeDir = resolveAgentHomeDir(agent);
+    const files: { name: string; path: string; sizeBytes: number }[] = [];
+
+    try {
+      const entries = await fs.readdir(homeDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+        if (!entry.name.endsWith(".md")) continue;
+        try {
+          const filePath = path.join(homeDir, entry.name);
+          const realPath = await fs.realpath(filePath);
+          const stat = await fs.stat(realPath);
+          if (stat.isFile() && stat.size <= 1024 * 1024) {
+            files.push({ name: entry.name, path: filePath, sizeBytes: stat.size });
+          }
+        } catch { /* skip unreadable */ }
+      }
+    } catch { /* dir doesn't exist or unreadable */ }
+
+    // Also include the instructionsFilePath if it's outside the home dir
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const instrPath = resolveInstructionsFileAbsolutePath(adapterConfig);
+    if (instrPath) {
+      const instrDir = path.dirname(instrPath);
+      const instrName = path.basename(instrPath);
+      if (instrDir !== homeDir && !files.some((f) => f.name === instrName)) {
+        try {
+          const stat = await fs.stat(instrPath);
+          if (stat.isFile() && stat.size <= 1024 * 1024) {
+            files.push({ name: instrName, path: instrPath, sizeBytes: stat.size });
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ homeDir, files });
+  });
+
+  router.get("/agents/:id/home-files/:filename", async (req, res) => {
+    const id = req.params.id as string;
+    const filename = req.params.filename as string;
+    if (!ALLOWED_HOME_FILE_RE.test(filename)) {
+      res.status(400).json({ error: "Invalid filename" });
+      return;
+    }
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const homeDir = resolveAgentHomeDir(agent);
+    let filePath = path.join(homeDir, filename);
+
+    // Fall back to instructionsFilePath if the file isn't in home
+    try {
+      await fs.access(filePath);
+    } catch {
+      const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+      const instrPath = resolveInstructionsFileAbsolutePath(adapterConfig);
+      if (instrPath && path.basename(instrPath) === filename) {
+        filePath = instrPath;
+      }
+    }
+
+    try {
+      const realPath = await fs.realpath(filePath);
+      const stat = await fs.stat(realPath);
+      if (!stat.isFile()) {
+        res.status(404).json({ error: "Not a file" });
+        return;
+      }
+      if (stat.size > 1024 * 1024) {
+        res.status(422).json({ error: "File exceeds 1 MB size limit" });
+        return;
+      }
+      const content = await fs.readFile(realPath, "utf8");
+      res.json({ name: filename, path: filePath, content });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        res.status(404).json({ error: "File not found" });
+        return;
+      }
+      res.status(500).json({ error: "Failed to read file" });
+    }
+  });
+
+  router.put("/agents/:id/home-files/:filename", async (req, res) => {
+    const id = req.params.id as string;
+    const filename = req.params.filename as string;
+    if (!ALLOWED_HOME_FILE_RE.test(filename)) {
+      res.status(400).json({ error: "Invalid filename" });
+      return;
+    }
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanManageInstructionsPath(req, agent);
+
+    const content = typeof req.body?.content === "string" ? req.body.content : null;
+    if (content === null) {
+      res.status(400).json({ error: "Request body must include a 'content' string field" });
+      return;
+    }
+    if (Buffer.byteLength(content, "utf8") > 1024 * 1024) {
+      res.status(422).json({ error: "Content exceeds 1 MB size limit" });
+      return;
+    }
+
+    const homeDir = resolveAgentHomeDir(agent);
+    let filePath = path.join(homeDir, filename);
+
+    // If file is actually the instructionsFilePath, write there instead
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const instrPath = resolveInstructionsFileAbsolutePath(adapterConfig);
+    if (instrPath && path.basename(instrPath) === filename) {
+      // Check if file exists in home; if not, use instructions path
+      try {
+        await fs.access(path.join(homeDir, filename));
+      } catch {
+        filePath = instrPath;
+      }
+    }
+
+    // Resolve symlinks for writing
+    try {
+      filePath = await fs.realpath(filePath);
+    } catch { /* file may not exist yet, that's ok */ }
+
+    try {
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, content, "utf8");
+    } catch {
+      res.status(500).json({ error: "Failed to write file" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.home_file_updated",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { filename, path: filePath },
+    });
+
+    res.json({ name: filename, path: filePath, ok: true });
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

@@ -1,13 +1,14 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { driveApi } from "../api/drive";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, HardDrive } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -461,6 +462,9 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Google Drive */}
+      <DriveSettingsSection companyId={selectedCompanyId!} />
+
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
@@ -512,6 +516,135 @@ export function CompanySettings() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DriveSettingsSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+
+  const connectionQuery = useQuery({
+    queryKey: queryKeys.drive.connection(companyId),
+    queryFn: () => driveApi.getConnection(companyId),
+  });
+
+  const connectMutation = useMutation({
+    mutationFn: async () => {
+      const redirectUri = `${window.location.origin}/api/companies/${companyId}/drive/callback`;
+      const { url } = await driveApi.getAuthUrl(companyId, redirectUri);
+
+      // Open popup for OAuth
+      const popup = window.open(url, "google-drive-auth", "width=600,height=700");
+      if (!popup) throw new Error("Popup blocked — please allow popups for this site");
+
+      // Wait for popup to complete and return the code
+      return new Promise<void>((resolve, reject) => {
+        const interval = setInterval(() => {
+          try {
+            if (popup.closed) {
+              clearInterval(interval);
+              // Refresh connection status
+              queryClient.invalidateQueries({ queryKey: queryKeys.drive.connection(companyId) });
+              resolve();
+            }
+            // Check if popup navigated to our redirect URI
+            if (popup.location?.href?.includes("/drive/callback")) {
+              const params = new URL(popup.location.href).searchParams;
+              const code = params.get("code");
+              if (code) {
+                popup.close();
+                clearInterval(interval);
+                driveApi
+                  .handleCallback(companyId, code, redirectUri)
+                  .then(() => {
+                    queryClient.invalidateQueries({ queryKey: queryKeys.drive.connection(companyId) });
+                    resolve();
+                  })
+                  .catch(reject);
+              }
+            }
+          } catch {
+            // Cross-origin — popup hasn't redirected back yet
+          }
+        }, 500);
+
+        // Timeout after 5 minutes
+        setTimeout(() => {
+          clearInterval(interval);
+          popup.close();
+          reject(new Error("Authorization timed out"));
+        }, 300_000);
+      });
+    },
+  });
+
+  const disconnectMutation = useMutation({
+    mutationFn: () => driveApi.disconnect(companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.drive.connection(companyId) });
+      queryClient.invalidateQueries({ queryKey: ["drive"] });
+    },
+  });
+
+  const isConnected = connectionQuery.data?.connected;
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Google Drive
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        {connectionQuery.isLoading ? (
+          <p className="text-sm text-muted-foreground">Checking connection...</p>
+        ) : isConnected ? (
+          <>
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4 text-green-600" />
+              <span className="text-sm font-medium text-green-600">Connected</span>
+              {connectionQuery.data?.userEmail && (
+                <span className="text-xs text-muted-foreground">
+                  ({connectionQuery.data.userEmail})
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    "Disconnect Google Drive? All synced file metadata will be removed.",
+                  );
+                  if (confirmed) disconnectMutation.mutate();
+                }}
+                disabled={disconnectMutation.isPending}
+              >
+                {disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-muted-foreground">
+              Connect Google Drive to browse and share files with your agents.
+            </p>
+            <Button
+              size="sm"
+              onClick={() => connectMutation.mutate()}
+              disabled={connectMutation.isPending}
+            >
+              {connectMutation.isPending ? "Connecting..." : "Connect Google Drive"}
+            </Button>
+            {connectMutation.isError && (
+              <p className="text-xs text-destructive">
+                {connectMutation.error instanceof Error
+                  ? connectMutation.error.message
+                  : "Failed to connect"}
+              </p>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

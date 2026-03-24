@@ -150,7 +150,24 @@ export const agentsApi = {
     api.get<{ path: string; content: string }>(agentPath(id, companyId, "/instructions-file")),
   updateInstructionsFile: (id: string, data: { content: string }, companyId?: string) =>
     api.put<{ path: string; ok: true }>(agentPath(id, companyId, "/instructions-file"), data),
+  listHomeFiles: (id: string, companyId?: string) =>
+    api.get<{ homeDir: string; files: AgentHomeFile[] }>(agentPath(id, companyId, "/home-files")),
+  getHomeFile: (id: string, filename: string, companyId?: string) =>
+    api.get<{ name: string; path: string; content: string }>(
+      agentPath(id, companyId, `/home-files/${encodeURIComponent(filename)}`),
+    ),
+  updateHomeFile: (id: string, filename: string, data: { content: string }, companyId?: string) =>
+    api.put<{ name: string; path: string; ok: true }>(
+      agentPath(id, companyId, `/home-files/${encodeURIComponent(filename)}`),
+      data,
+    ),
 };
+
+export interface AgentHomeFile {
+  name: string;
+  path: string;
+  sizeBytes: number;
+}
 
 export interface AvailableSkill {
   name: string;

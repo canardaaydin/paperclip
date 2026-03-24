@@ -12,6 +12,8 @@ export const queryKeys = {
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     instructionsFile: (agentId: string) => ["agents", "instructions-file", agentId] as const,
+    homeFiles: (agentId: string) => ["agents", "home-files", agentId] as const,
+    homeFile: (agentId: string, filename: string) => ["agents", "home-file", agentId, filename] as const,
     adapterModels: (companyId: string, adapterType: string) =>
       ["agents", companyId, "adapter-models", adapterType] as const,
   },
@@ -107,6 +109,11 @@ export const queryKeys = {
   org: (companyId: string) => ["org", companyId] as const,
   skills: {
     available: ["skills", "available"] as const,
+  },
+  drive: {
+    connection: (companyId: string) => ["drive", "connection", companyId] as const,
+    files: (companyId: string, parentId?: string | null) =>
+      ["drive", "files", companyId, parentId ?? "__root__"] as const,
   },
   plugins: {
     all: ["plugins"] as const,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { agentsApi, type AgentKey, type ClaudeLoginResult, type AvailableSkill } from "../api/agents";
+import { agentsApi, type AgentKey, type AgentHomeFile, type ClaudeLoginResult, type AvailableSkill } from "../api/agents";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
@@ -1444,26 +1444,30 @@ function ConfigurationTab({
 
 function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: string }) {
   const queryClient = useQueryClient();
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const instructionsPath =
-    typeof agent.adapterConfig?.instructionsFilePath === "string" && agent.adapterConfig.instructionsFilePath.trim().length > 0
-      ? agent.adapterConfig.instructionsFilePath
-      : null;
+  const { data: homeFiles, isLoading: listLoading } = useQuery({
+    queryKey: queryKeys.agents.homeFiles(agent.id),
+    queryFn: () => agentsApi.listHomeFiles(agent.id, companyId),
+  });
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.agents.instructionsFile(agent.id),
-    queryFn: () => agentsApi.getInstructionsFile(agent.id, companyId),
-    enabled: Boolean(instructionsPath),
+  const files = homeFiles?.files ?? [];
+  const activeFile = selectedFile ?? files[0]?.name ?? null;
+
+  const { data: fileData, isLoading: fileLoading, error: fileError } = useQuery({
+    queryKey: queryKeys.agents.homeFile(agent.id, activeFile ?? ""),
+    queryFn: () => agentsApi.getHomeFile(agent.id, activeFile!, companyId),
+    enabled: Boolean(activeFile),
     retry: false,
   });
 
   const saveMutation = useMutation({
-    mutationFn: (content: string) => agentsApi.updateInstructionsFile(agent.id, { content }, companyId),
+    mutationFn: (content: string) => agentsApi.updateHomeFile(agent.id, activeFile!, { content }, companyId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.homeFile(agent.id, activeFile!) });
       setEditing(false);
       setSaveError(null);
     },
@@ -1473,7 +1477,7 @@ function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: strin
   });
 
   function startEditing() {
-    setDraft(data?.content ?? "");
+    setDraft(fileData?.content ?? "");
     setSaveError(null);
     setEditing(true);
   }
@@ -1483,77 +1487,122 @@ function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: strin
     setSaveError(null);
   }
 
-  if (!instructionsPath) {
+  function selectFile(name: string) {
+    if (editing) return;
+    setSelectedFile(name);
+    setSaveError(null);
+  }
+
+  if (listLoading) {
+    return (
+      <div className="border border-border rounded-lg p-6 flex items-center justify-center">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        <span className="ml-2 text-sm text-muted-foreground">Loading files...</span>
+      </div>
+    );
+  }
+
+  if (files.length === 0) {
     return (
       <div className="border border-border rounded-lg p-6 text-center space-y-2">
         <p className="text-sm text-muted-foreground">
-          No instructions file path is configured for this agent.
+          No markdown files found for this agent.
         </p>
         <p className="text-xs text-muted-foreground">
-          Set an instructions file path in the Configuration tab to enable viewing and editing.
+          Set an instructions file path in the Configuration tab, or add .md files to the agent's home directory.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
-          <h3 className="text-sm font-medium">Instructions file</h3>
-          <p className="text-xs text-muted-foreground font-mono break-all">{data?.path ?? instructionsPath}</p>
-        </div>
-        {!editing && data?.content != null && (
-          <Button variant="outline" size="sm" onClick={startEditing}>
-            Edit
-          </Button>
+    <div className="flex gap-4 max-w-5xl">
+      {/* File list sidebar */}
+      <div className="w-48 shrink-0 space-y-1">
+        {files.map((f) => (
+          <button
+            key={f.name}
+            onClick={() => selectFile(f.name)}
+            className={cn(
+              "w-full text-left px-3 py-1.5 rounded-md text-sm font-mono transition-colors truncate",
+              f.name === activeFile
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:bg-accent/50",
+              editing && f.name !== activeFile && "opacity-50 cursor-not-allowed",
+            )}
+            disabled={editing && f.name !== activeFile}
+          >
+            {f.name}
+          </button>
+        ))}
+        {homeFiles?.homeDir && (
+          <p className="text-[10px] text-muted-foreground/60 font-mono break-all px-3 pt-2">
+            {homeFiles.homeDir}
+          </p>
         )}
       </div>
 
-      {isLoading && (
-        <div className="border border-border rounded-lg p-6 flex items-center justify-center">
-          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          <span className="ml-2 text-sm text-muted-foreground">Loading file...</span>
-        </div>
-      )}
-
-      {error && !isLoading && (
-        <div className="border border-destructive/30 rounded-lg p-4">
-          <p className="text-sm text-destructive">
-            {error instanceof Error ? error.message : "Failed to load instructions file."}
-          </p>
-        </div>
-      )}
-
-      {!isLoading && !error && data && !editing && (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <div className="max-h-[70vh] overflow-y-auto p-4">
-            <MarkdownBody>{data.content}</MarkdownBody>
+      {/* File content */}
+      <div className="flex-1 min-w-0 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <h3 className="text-sm font-medium font-mono">{activeFile}</h3>
+            {fileData?.path && (
+              <p className="text-[11px] text-muted-foreground font-mono break-all">{fileData.path}</p>
+            )}
           </div>
-        </div>
-      )}
-
-      {editing && (
-        <div className="space-y-3">
-          <textarea
-            className="w-full min-h-[50vh] font-mono text-sm bg-muted/30 border border-border rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            spellCheck={false}
-          />
-          {saveError && (
-            <p className="text-sm text-destructive">{saveError}</p>
+          {!editing && fileData?.content != null && (
+            <Button variant="outline" size="sm" onClick={startEditing}>
+              Edit
+            </Button>
           )}
-          <div className="flex items-center gap-2 justify-end">
-            <Button variant="ghost" size="sm" onClick={cancelEditing} disabled={saveMutation.isPending}>
-              Cancel
-            </Button>
-            <Button size="sm" onClick={() => saveMutation.mutate(draft)} disabled={saveMutation.isPending}>
-              {saveMutation.isPending ? "Saving..." : "Save"}
-            </Button>
-          </div>
         </div>
-      )}
+
+        {fileLoading && (
+          <div className="border border-border rounded-lg p-6 flex items-center justify-center">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            <span className="ml-2 text-sm text-muted-foreground">Loading...</span>
+          </div>
+        )}
+
+        {fileError && !fileLoading && (
+          <div className="border border-destructive/30 rounded-lg p-4">
+            <p className="text-sm text-destructive">
+              {fileError instanceof Error ? fileError.message : "Failed to load file."}
+            </p>
+          </div>
+        )}
+
+        {!fileLoading && !fileError && fileData && !editing && (
+          <div className="border border-border rounded-lg overflow-hidden">
+            <div className="max-h-[70vh] overflow-y-auto p-4">
+              <MarkdownBody>{fileData.content}</MarkdownBody>
+            </div>
+          </div>
+        )}
+
+        {editing && (
+          <>
+            <textarea
+              className="w-full min-h-[50vh] font-mono text-sm bg-muted/30 border border-border rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              spellCheck={false}
+            />
+            {saveError && (
+              <p className="text-sm text-destructive">{saveError}</p>
+            )}
+            <div className="flex items-center gap-2 justify-end">
+              <Button variant="ghost" size="sm" onClick={cancelEditing} disabled={saveMutation.isPending}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={() => saveMutation.mutate(draft)} disabled={saveMutation.isPending}>
+                {saveMutation.isPending ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
