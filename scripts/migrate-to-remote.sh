@@ -264,11 +264,17 @@ if [[ -d "$LOCAL_INSTANCE/data/storage" ]]; then
   cp -r "$LOCAL_INSTANCE/data/storage" "$WORK_DIR/storage"
 fi
 
+# Workspaces (agent working directories with SOUL.md, TOOLS.md, etc.)
+if [[ -d "$LOCAL_INSTANCE/workspaces" ]]; then
+  cp -r "$LOCAL_INSTANCE/workspaces" "$WORK_DIR/workspaces"
+fi
+
 # Build file list for tar (only include files that exist)
 TAR_FILES="data-only.sql master.key"
 [[ -f "$WORK_DIR/instance.env" ]] && TAR_FILES="$TAR_FILES instance.env"
 [[ -f "$WORK_DIR/extra-migrations.sql" ]] && TAR_FILES="$TAR_FILES extra-migrations.sql"
 [[ -d "$WORK_DIR/storage" ]] && TAR_FILES="$TAR_FILES storage"
+[[ -d "$WORK_DIR/workspaces" ]] && TAR_FILES="$TAR_FILES workspaces"
 
 # Write config.json locally (avoids fragile remote heredoc quoting)
 cat > "$WORK_DIR/config.json" << CFGEOF
@@ -304,7 +310,7 @@ CFGEOF
 TAR_FILES="$TAR_FILES config.json"
 
 # shellcheck disable=SC2086
-tar czf "$WORK_DIR/bundle.tar.gz" -C "$WORK_DIR" $TAR_FILES
+tar czf "$WORK_DIR/bundle.tar.gz" --exclude='._*' --exclude='.DS_Store' -C "$WORK_DIR" $TAR_FILES
 
 BUNDLE_SIZE=$(du -h "$WORK_DIR/bundle.tar.gz" | cut -f1)
 log "Bundle size: $BUNDLE_SIZE"
@@ -417,6 +423,7 @@ remote_compose "run --rm -v /tmp/paperclip-migrate:/migrate server sh -c '
   cp /migrate/master.key /paperclip/instances/default/secrets/master.key
   cp /migrate/config.json /paperclip/instances/default/config.json
   test -d /migrate/storage && cp -r /migrate/storage /paperclip/instances/default/data/storage
+  test -d /migrate/workspaces && cp -r /migrate/workspaces /paperclip/instances/default/workspaces
   test -f /migrate/instance.env && cp /migrate/instance.env /paperclip/instances/default/.env
   echo done
 '" > /dev/null 2>&1

@@ -253,6 +253,9 @@ export function chatRoutes(db: Db) {
 
       // Build claude CLI args — allow full tool use so agent can search/read context
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (adapterConfig.dangerouslySkipPermissions === true) {
+        args.push("--dangerously-skip-permissions");
+      }
       if (model) args.push("--model", model);
       if (tempInstrFile) args.push("--append-system-prompt-file", tempInstrFile);
 
