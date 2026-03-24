@@ -232,17 +232,50 @@ export function chatRoutes(db: Db) {
 
       // Build instructions file path for --append-system-prompt-file
       const instrPath = resolveInstructionsFilePath(adapterConfig);
+      let tempDir: string | null = null;
       let tempInstrFile: string | null = null;
 
       if (instrPath) {
         try {
           const content = await fs.readFile(instrPath, "utf8");
-          const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-chat-"));
-          tempInstrFile = path.join(tmpDir, "agent-instructions.md");
+          tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-chat-"));
+          tempInstrFile = path.join(tempDir, "agent-instructions.md");
           const pathDirective = `\nThe above agent instructions were loaded from ${instrPath}. Resolve any relative file references from ${path.dirname(instrPath)}/.`;
           await fs.writeFile(tempInstrFile, content + pathDirective, "utf8");
         } catch {
           // instructions file not readable, skip
+        }
+      }
+
+      // Resolve agent skills directory: look for a skills/ dir as sibling of the
+      // agents/ directory (e.g. /opt/agent-instructions/GTM-multi-agent-v2/skills/)
+      let skillsAddDir: string | null = null;
+      if (instrPath) {
+        // Walk up from the instructions file to find the repo root with a skills/ dir
+        let dir = path.dirname(instrPath);
+        for (let i = 0; i < 5; i++) {
+          const candidate = path.join(dir, "skills");
+          const hasSkills = await fs.stat(candidate).then(s => s.isDirectory()).catch(() => false);
+          if (hasSkills) {
+            // Build a temp .claude/skills/ dir with symlinks so --add-dir works
+            if (!tempDir) tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-chat-"));
+            const dotClaudeSkills = path.join(tempDir, ".claude", "skills");
+            await fs.mkdir(dotClaudeSkills, { recursive: true });
+            const entries = await fs.readdir(candidate, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isDirectory()) {
+                await fs.symlink(
+                  path.join(candidate, entry.name),
+                  path.join(dotClaudeSkills, entry.name),
+                );
+              }
+            }
+            skillsAddDir = tempDir;
+            break;
+          }
+          const parent = path.dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
         }
       }
 
@@ -258,6 +291,7 @@ export function chatRoutes(db: Db) {
       }
       if (model) args.push("--model", model);
       if (tempInstrFile) args.push("--append-system-prompt-file", tempInstrFile);
+      if (skillsAddDir) args.push("--add-dir", skillsAddDir);
 
       // Build env: inherit process.env but strip nesting vars
       const env: Record<string, string> = {};
@@ -414,9 +448,9 @@ export function chatRoutes(db: Db) {
           res.write("data: [DONE]\n\n");
           res.end();
 
-          // Cleanup temp file
-          if (tempInstrFile) {
-            fs.rm(path.dirname(tempInstrFile), { recursive: true, force: true }).catch(() => {});
+          // Cleanup temp dir
+          if (tempDir) {
+            fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
           }
         });
 
