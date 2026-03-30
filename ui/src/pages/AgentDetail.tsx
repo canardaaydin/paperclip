@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { agentsApi, type AgentKey, type AgentHomeFile, type ClaudeLoginResult, type AvailableSkill } from "../api/agents";
+import { agentsApi, type AgentKey, type AgentHomeFile, type ClaudeLoginResult, type AvailableSkill, type SkillRevision } from "../api/agents";
+import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { ApiError } from "../api/client";
@@ -1608,73 +1609,255 @@ function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: strin
 }
 
 function SkillsTab({ agent }: { agent: Agent }) {
-  const instructionsPath =
-    typeof agent.adapterConfig?.instructionsFilePath === "string" && agent.adapterConfig.instructionsFilePath.trim().length > 0
-      ? agent.adapterConfig.instructionsFilePath
-      : null;
-  const { data, isLoading, error } = useQuery({
+  const queryClient = useQueryClient();
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [comparingRevisionId, setComparingRevisionId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newSkillName, setNewSkillName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const { data: skillsData, isLoading: skillsLoading } = useQuery({
     queryKey: queryKeys.skills.available,
     queryFn: () => agentsApi.availableSkills(),
   });
-  const skills = data?.skills ?? [];
+  const skills = skillsData?.skills ?? [];
+  const activeSkill = selectedSkill ?? skills[0]?.name ?? null;
+
+  const { data: contentData, isLoading: contentLoading, error: contentError } = useQuery({
+    queryKey: queryKeys.skills.content(activeSkill!),
+    queryFn: () => agentsApi.getSkillContent(activeSkill!),
+    enabled: Boolean(activeSkill),
+  });
+
+  const { data: revisionsData } = useQuery({
+    queryKey: queryKeys.skills.revisions(activeSkill!),
+    queryFn: () => agentsApi.getSkillRevisions(activeSkill!),
+    enabled: Boolean(activeSkill) && showHistory,
+  });
+  const revisions = revisionsData?.revisions ?? [];
+
+  const { data: compareRevision } = useQuery({
+    queryKey: queryKeys.skills.revision(activeSkill!, comparingRevisionId!),
+    queryFn: () => agentsApi.getSkillRevision(activeSkill!, comparingRevisionId!),
+    enabled: Boolean(activeSkill) && Boolean(comparingRevisionId),
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: (content: string) => agentsApi.updateSkillContent(activeSkill!, { content }),
+    onSuccess: () => {
+      setEditing(false);
+      setSaveError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills.content(activeSkill!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills.revisions(activeSkill!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills.available });
+    },
+    onError: (err) => setSaveError(err instanceof Error ? err.message : "Save failed"),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: { name: string }) => agentsApi.createSkill(data),
+    onSuccess: (_, variables) => {
+      setCreating(false);
+      setNewSkillName("");
+      setCreateError(null);
+      setSelectedSkill(variables.name);
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills.available });
+    },
+    onError: (err) => setCreateError(err instanceof Error ? err.message : "Create failed"),
+  });
+
+  const startEditing = () => {
+    if (!contentData) return;
+    setDraft(contentData.content);
+    setSaveError(null);
+    setEditing(true);
+    setShowHistory(false);
+    setComparingRevisionId(null);
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="border border-border rounded-lg p-4 space-y-2">
-        <h3 className="text-sm font-medium">Skills</h3>
-        <p className="text-sm text-muted-foreground">
-          Skills are reusable instruction bundles the agent can invoke from its local tool environment.
-          This view shows the current instructions file and the skills currently visible to the local agent runtime.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Agent: <span className="font-mono">{agent.name}</span>
-        </p>
-        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-            Instructions file
-          </div>
-          <div className="font-mono break-all">
-            {instructionsPath ?? "No instructions file configured for this agent."}
-          </div>
-        </div>
+    <div className="flex gap-4 max-w-6xl">
+      {/* Sidebar */}
+      <div className="w-52 shrink-0 space-y-1">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full mb-2"
+          onClick={() => { setCreating(true); setCreateError(null); setNewSkillName(""); }}
+        >
+          <Plus className="h-3.5 w-3.5 mr-1" /> New Skill
+        </Button>
 
-        <div className="space-y-2">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">
-            Available skills
-          </div>
-          {isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading available skills…</p>
-          ) : error ? (
-            <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : "Failed to load available skills."}
-            </p>
-          ) : skills.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No local skills were found.</p>
-          ) : (
-            <div className="space-y-2">
-              {skills.map((skill) => (
-                <SkillRow key={skill.name} skill={skill} />
-              ))}
+        {creating && (
+          <div className="border border-border rounded-md p-2 space-y-2 mb-2">
+            <Input
+              placeholder="skill-name"
+              value={newSkillName}
+              onChange={(e) => setNewSkillName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+              className="font-mono text-xs h-7"
+            />
+            {createError && <p className="text-xs text-destructive">{createError}</p>}
+            <div className="flex gap-1">
+              <Button size="sm" variant="outline" className="h-6 text-xs flex-1" onClick={() => setCreating(false)}>Cancel</Button>
+              <Button
+                size="sm"
+                className="h-6 text-xs flex-1"
+                disabled={!newSkillName || createMutation.isPending}
+                onClick={() => createMutation.mutate({ name: newSkillName })}
+              >
+                {createMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Create"}
+              </Button>
             </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+          </div>
+        )}
 
-function SkillRow({ skill }: { skill: AvailableSkill }) {
-  return (
-    <div className="rounded-md border border-border bg-muted/20 px-3 py-2 space-y-1.5">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-sm">{skill.name}</span>
-        <Badge variant={skill.isPaperclipManaged ? "secondary" : "outline"}>
-          {skill.isPaperclipManaged ? "Paperclip" : "Local"}
-        </Badge>
+        {skillsLoading ? (
+          <div className="flex items-center justify-center py-4"><Loader2 className="h-4 w-4 animate-spin" /></div>
+        ) : skills.length === 0 ? (
+          <p className="text-xs text-muted-foreground px-2">No skills found.</p>
+        ) : (
+          skills.map((skill) => (
+            <button
+              key={skill.name}
+              className={cn(
+                "w-full text-left px-2 py-1.5 rounded-md text-sm truncate flex items-center gap-1.5",
+                activeSkill === skill.name ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                editing && activeSkill !== skill.name && "opacity-50 cursor-not-allowed",
+              )}
+              disabled={editing && activeSkill !== skill.name}
+              onClick={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }}
+            >
+              <span className="font-mono text-xs truncate flex-1">{skill.name}</span>
+              {skill.isPaperclipManaged && <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 shrink-0">Built-in</Badge>}
+            </button>
+          ))
+        )}
       </div>
-      <p className="text-sm text-muted-foreground">
-        {skill.description || "No description available."}
-      </p>
+
+      {/* Content pane */}
+      <div className="flex-1 min-w-0 space-y-3">
+        {!activeSkill ? (
+          <p className="text-sm text-muted-foreground">Select a skill or create a new one.</p>
+        ) : contentLoading ? (
+          <div className="flex items-center gap-2 py-8 justify-center"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>
+        ) : contentError ? (
+          <p className="text-sm text-destructive">{contentError instanceof Error ? contentError.message : "Failed to load skill."}</p>
+        ) : contentData ? (
+          <>
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium font-mono">{activeSkill}</h3>
+                <p className="text-xs text-muted-foreground font-mono break-all">{contentData.path}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {!editing && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowHistory(!showHistory)}
+                    >
+                      <Clock className="h-3.5 w-3.5 mr-1" /> History
+                    </Button>
+                    {!contentData.isPaperclipManaged && (
+                      <Button variant="outline" size="sm" onClick={startEditing}>Edit</Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Diff view */}
+            {comparingRevisionId && compareRevision && !editing && (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <div className="bg-muted/30 px-3 py-1.5 flex items-center justify-between text-xs text-muted-foreground border-b border-border">
+                  <span>Comparing revision {compareRevision.revisionNumber} with current</span>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setComparingRevisionId(null)}>Close diff</Button>
+                </div>
+                <div className="max-h-[60vh] overflow-auto text-xs">
+                  <ReactDiffViewer
+                    oldValue={compareRevision.body}
+                    newValue={contentData.content}
+                    splitView={false}
+                    useDarkTheme={true}
+                    compareMethod={DiffMethod.LINES}
+                    leftTitle={`Revision ${compareRevision.revisionNumber}`}
+                    rightTitle="Current"
+                    styles={{
+                      contentText: { fontSize: "12px", lineHeight: "1.5" },
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* History panel */}
+            {showHistory && !editing && !comparingRevisionId && (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <div className="bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground border-b border-border font-medium">
+                  Version History
+                </div>
+                {revisions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground p-3">No revision history yet. Edit the skill to start tracking changes.</p>
+                ) : (
+                  <div className="divide-y divide-border max-h-[40vh] overflow-auto">
+                    {revisions.map((rev) => (
+                      <div key={rev.id} className="px-3 py-2 flex items-center justify-between hover:bg-accent/30 text-xs">
+                        <div>
+                          <span className="font-mono font-medium">v{rev.revisionNumber}</span>
+                          <span className="text-muted-foreground ml-2">{rev.changeSummary || "No summary"}</span>
+                          <span className="text-muted-foreground ml-2">— {rev.editedBy}</span>
+                          <span className="text-muted-foreground ml-2">{relativeTime(rev.createdAt)}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-xs"
+                          onClick={() => setComparingRevisionId(rev.id)}
+                        >
+                          Diff
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Content / Editor */}
+            {!comparingRevisionId && (
+              editing ? (
+                <div className="space-y-2">
+                  <textarea
+                    className="w-full min-h-[50vh] rounded-md border border-border bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                  />
+                  {saveError && <p className="text-sm text-destructive">{saveError}</p>}
+                  <div className="flex gap-2 justify-end">
+                    <Button variant="outline" size="sm" onClick={() => { setEditing(false); setSaveError(null); }}>Cancel</Button>
+                    <Button size="sm" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate(draft)}>
+                      {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                      Save
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <div className="max-h-[70vh] overflow-y-auto p-4">
+                    <MarkdownBody>{contentData.content}</MarkdownBody>
+                  </div>
+                </div>
+              )
+            )}
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -10,12 +10,14 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
 import { and, eq, isNull, desc } from "drizzle-orm";
+import fsAsync from "node:fs/promises";
 import type { Db } from "@paperclipai/db";
 import {
   agentApiKeys,
   authUsers,
   invites,
-  joinRequests
+  joinRequests,
+  skillRevisions
 } from "@paperclipai/db";
 import {
   acceptInviteSchema,
@@ -1722,6 +1724,167 @@ export function accessRoutes(
     const markdown = readSkillMarkdown(skillName);
     if (!markdown) throw notFound("Skill not found");
     res.type("text/markdown").send(markdown);
+  });
+
+  // ── Skill content CRUD + version history ────────────────────────────────
+
+  const VALID_SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+  const SKILL_MAX_BYTES = 1_048_576; // 1 MB
+
+  function resolveClaudeSkillPath(skillName: string): string | null {
+    if (!VALID_SKILL_NAME_RE.test(skillName)) return null;
+    const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+    return path.join(homeDir, ".claude", "skills", skillName, "SKILL.md");
+  }
+
+  router.get("/skills/:skillName/content", async (req, res) => {
+    const skillName = (req.params.skillName as string).trim().toLowerCase();
+    const skillPath = resolveClaudeSkillPath(skillName);
+    if (!skillPath) throw badRequest("Invalid skill name");
+
+    let realPath: string;
+    try {
+      realPath = await fsAsync.realpath(skillPath);
+    } catch {
+      throw notFound("Skill not found");
+    }
+
+    const stat = await fsAsync.stat(realPath);
+    if (!stat.isFile()) throw notFound("Skill not found");
+    if (stat.size > SKILL_MAX_BYTES) throw badRequest("Skill file too large");
+
+    const content = await fsAsync.readFile(realPath, "utf8");
+    const paperclipSkillsDir = resolvePaperclipSkillsDir();
+    const isPaperclipManaged = paperclipSkillsDir
+      ? fs.existsSync(path.join(paperclipSkillsDir, skillName))
+      : false;
+
+    res.json({ name: skillName, path: realPath, content, isPaperclipManaged });
+  });
+
+  router.put("/skills/:skillName/content", async (req, res) => {
+    const skillName = (req.params.skillName as string).trim().toLowerCase();
+    const skillPath = resolveClaudeSkillPath(skillName);
+    if (!skillPath) throw badRequest("Invalid skill name");
+
+    const { content } = req.body as { content?: string };
+    if (typeof content !== "string") throw badRequest("content is required");
+    if (Buffer.byteLength(content) > SKILL_MAX_BYTES) throw badRequest("Content too large");
+
+    let realPath: string;
+    try {
+      realPath = await fsAsync.realpath(skillPath);
+    } catch {
+      throw notFound("Skill not found");
+    }
+
+    // Get current content to store as previous revision
+    let previousContent: string | null = null;
+    try {
+      previousContent = await fsAsync.readFile(realPath, "utf8");
+    } catch { /* new file */ }
+
+    // Write the file
+    await fsAsync.writeFile(realPath, content, "utf8");
+
+    // Store revision in DB
+    const lastRevision = await db
+      .select({ revisionNumber: skillRevisions.revisionNumber })
+      .from(skillRevisions)
+      .where(eq(skillRevisions.skillName, skillName))
+      .orderBy(desc(skillRevisions.revisionNumber))
+      .limit(1);
+    const nextRevision = (lastRevision[0]?.revisionNumber ?? 0) + 1;
+
+    // If this is the first edit and there was previous content, store the original as revision 1
+    if (previousContent !== null && lastRevision.length === 0) {
+      await db.insert(skillRevisions).values({
+        skillName,
+        revisionNumber: 1,
+        body: previousContent,
+        changeSummary: "Original version",
+        editedBy: "system",
+      });
+      await db.insert(skillRevisions).values({
+        skillName,
+        revisionNumber: 2,
+        body: content,
+        changeSummary: req.body.changeSummary ?? null,
+        editedBy: "board",
+      });
+    } else {
+      await db.insert(skillRevisions).values({
+        skillName,
+        revisionNumber: nextRevision,
+        body: content,
+        changeSummary: req.body.changeSummary ?? null,
+        editedBy: "board",
+      });
+    }
+
+    res.json({ name: skillName, path: realPath, ok: true });
+  });
+
+  router.post("/skills", async (req, res) => {
+    const { name, content } = req.body as { name?: string; content?: string };
+    if (!name || !VALID_SKILL_NAME_RE.test(name)) throw badRequest("Invalid skill name");
+
+    const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+    const skillDir = path.join(homeDir, ".claude", "skills", name);
+    const skillPath = path.join(skillDir, "SKILL.md");
+
+    const exists = await fsAsync.stat(skillDir).then(() => true).catch(() => false);
+    if (exists) throw conflict("Skill already exists");
+
+    const template = content ?? `---\nname: ${name}\ndescription: >\n  A brief description of what this skill does.\n---\n\n# ${name}\n\n<!-- Skill instructions go here -->\n`;
+
+    await fsAsync.mkdir(skillDir, { recursive: true });
+    await fsAsync.writeFile(skillPath, template, "utf8");
+
+    // Store initial revision
+    await db.insert(skillRevisions).values({
+      skillName: name,
+      revisionNumber: 1,
+      body: template,
+      changeSummary: "Created skill",
+      editedBy: "board",
+    });
+
+    res.status(201).json({ name, path: skillPath, ok: true });
+  });
+
+  router.get("/skills/:skillName/revisions", async (req, res) => {
+    const skillName = (req.params.skillName as string).trim().toLowerCase();
+    if (!VALID_SKILL_NAME_RE.test(skillName)) throw badRequest("Invalid skill name");
+
+    const revisions = await db
+      .select({
+        id: skillRevisions.id,
+        revisionNumber: skillRevisions.revisionNumber,
+        changeSummary: skillRevisions.changeSummary,
+        editedBy: skillRevisions.editedBy,
+        createdAt: skillRevisions.createdAt,
+      })
+      .from(skillRevisions)
+      .where(eq(skillRevisions.skillName, skillName))
+      .orderBy(desc(skillRevisions.revisionNumber));
+
+    res.json({ revisions });
+  });
+
+  router.get("/skills/:skillName/revisions/:revisionId", async (req, res) => {
+    const skillName = (req.params.skillName as string).trim().toLowerCase();
+    const revisionId = req.params.revisionId as string;
+    if (!VALID_SKILL_NAME_RE.test(skillName)) throw badRequest("Invalid skill name");
+
+    const [revision] = await db
+      .select()
+      .from(skillRevisions)
+      .where(and(eq(skillRevisions.skillName, skillName), eq(skillRevisions.id, revisionId)))
+      .limit(1);
+
+    if (!revision) throw notFound("Revision not found");
+    res.json(revision);
   });
 
   router.post(

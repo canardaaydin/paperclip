@@ -146,6 +146,25 @@ export const agentsApi = {
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  getSkillContent: (skillName: string) =>
+    api.get<{ name: string; path: string; content: string; isPaperclipManaged: boolean }>(
+      `/skills/${encodeURIComponent(skillName)}/content`,
+    ),
+  updateSkillContent: (skillName: string, data: { content: string; changeSummary?: string }) =>
+    api.put<{ name: string; path: string; ok: true }>(
+      `/skills/${encodeURIComponent(skillName)}/content`,
+      data,
+    ),
+  createSkill: (data: { name: string; content?: string }) =>
+    api.post<{ name: string; path: string; ok: true }>("/skills", data),
+  getSkillRevisions: (skillName: string) =>
+    api.get<{ revisions: SkillRevision[] }>(
+      `/skills/${encodeURIComponent(skillName)}/revisions`,
+    ),
+  getSkillRevision: (skillName: string, revisionId: string) =>
+    api.get<SkillRevision & { body: string }>(
+      `/skills/${encodeURIComponent(skillName)}/revisions/${encodeURIComponent(revisionId)}`,
+    ),
   getInstructionsFile: (id: string, companyId?: string) =>
     api.get<{ path: string; content: string }>(agentPath(id, companyId, "/instructions-file")),
   updateInstructionsFile: (id: string, data: { content: string }, companyId?: string) =>
@@ -173,4 +192,12 @@ export interface AvailableSkill {
   name: string;
   description: string;
   isPaperclipManaged: boolean;
+}
+
+export interface SkillRevision {
+  id: string;
+  revisionNumber: number;
+  changeSummary: string | null;
+  editedBy: string | null;
+  createdAt: string;
 }

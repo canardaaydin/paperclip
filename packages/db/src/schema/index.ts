@@ -53,3 +53,4 @@ export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { driveConnections } from "./drive_connections.js";
 export { driveFiles } from "./drive_files.js";
+export { skillRevisions } from "./skill_revisions.js";

@@ -109,6 +109,9 @@ export const queryKeys = {
   org: (companyId: string) => ["org", companyId] as const,
   skills: {
     available: ["skills", "available"] as const,
+    content: (skillName: string) => ["skills", "content", skillName] as const,
+    revisions: (skillName: string) => ["skills", "revisions", skillName] as const,
+    revision: (skillName: string, revisionId: string) => ["skills", "revision", skillName, revisionId] as const,
   },
   drive: {
     connection: (companyId: string) => ["drive", "connection", companyId] as const,
