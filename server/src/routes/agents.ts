@@ -1378,10 +1378,40 @@ export function agentRoutes(db: Db) {
       ? adapterConfig.instructionsFilePath.trim()
       : null;
 
-    const { resolveAgentSkills } = await import("../services/skills.js");
+    const { resolveAgentSkills, resolveSkillsDirForInstructionsPath } = await import("../services/skills.js");
     const skills = await resolveAgentSkills(instrPath) ?? [];
 
-    res.json({ agentId: agent.id, agentName: agent.name, skills });
+    // Build skill → agents mapping for all agents in this company
+    const companyAgents = await svc.list(agent.companyId, { includeTerminated: false });
+    const skillAgentMap = new Map<string, { id: string; name: string; icon: string | null }[]>();
+
+    for (const a of companyAgents) {
+      const ac = (a.adapterConfig ?? {}) as Record<string, unknown>;
+      const ip = typeof ac.instructionsFilePath === "string" ? ac.instructionsFilePath.trim() : null;
+      if (!ip) continue;
+      const dir = await resolveSkillsDirForInstructionsPath(ip);
+      if (!dir) continue;
+      // Only read directory names, don't re-parse SKILL.md (already cached via resolveAgentSkills)
+      let entries;
+      try {
+        const fsAsync = await import("node:fs/promises");
+        entries = await fsAsync.readdir(dir, { withFileTypes: true });
+      } catch { continue; }
+      for (const entry of entries) {
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        if (entry.name.startsWith(".")) continue;
+        const list = skillAgentMap.get(entry.name) ?? [];
+        list.push({ id: a.id, name: a.name, icon: (a as Record<string, unknown>).icon as string | null ?? null });
+        skillAgentMap.set(entry.name, list);
+      }
+    }
+
+    const enrichedSkills = skills.map((s) => ({
+      ...s,
+      agents: skillAgentMap.get(s.name) ?? [],
+    }));
+
+    res.json({ agentId: agent.id, agentName: agent.name, skills: enrichedSkills });
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

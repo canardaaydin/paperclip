@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { agentsApi, type AgentKey, type AgentHomeFile, type ClaudeLoginResult, type AvailableSkill, type SkillRevision } from "../api/agents";
+import { agentsApi, type AgentKey, type AgentHomeFile, type ClaudeLoginResult, type AvailableSkill, type SkillRevision, type AgentSkillWithAccess } from "../api/agents";
 import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -1608,25 +1608,29 @@ function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: strin
   );
 }
 
-function SkillSidebarItem({ skill, activeSkill, editing, isAgentSkill, onSelect }: {
-  skill: AvailableSkill; activeSkill: string | null; editing: boolean; isAgentSkill: boolean; onSelect: () => void;
+function SkillSidebarItem({ skill, activeSkill, editing, agents, onSelect }: {
+  skill: AvailableSkill;
+  activeSkill: string | null;
+  editing: boolean;
+  agents: { id: string; name: string; icon: string | null }[];
+  onSelect: () => void;
 }) {
   return (
     <button
       className={cn(
-        "w-full text-left px-2 py-1.5 rounded-md text-sm truncate flex items-center gap-1.5",
+        "w-full text-left px-2 py-1.5 rounded-md text-sm flex flex-col gap-0.5",
         activeSkill === skill.name ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
         editing && activeSkill !== skill.name && "opacity-50 cursor-not-allowed",
       )}
       disabled={editing && activeSkill !== skill.name}
       onClick={onSelect}
     >
-      <span className="font-mono text-xs truncate flex-1">{skill.name}</span>
-      {skill.isPaperclipManaged ? (
-        <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 shrink-0">Built-in</Badge>
-      ) : isAgentSkill ? (
-        <Badge variant="default" className="text-[10px] px-1 py-0 h-4 shrink-0 bg-blue-600">Agent</Badge>
-      ) : null}
+      <span className="font-mono text-xs truncate">{skill.name}</span>
+      {agents.length > 0 && (
+        <span className="text-[10px] text-muted-foreground truncate">
+          {agents.map((a) => a.name.split(" ").map(w => w[0]).join("")).join(", ")}
+        </span>
+      )}
     </button>
   );
 }
@@ -1648,11 +1652,13 @@ function SkillsTab({ agent }: { agent: Agent }) {
     queryFn: () => agentsApi.agentSkills(agent.id),
   });
 
-  const skills: AvailableSkill[] = (agentSkillsData?.skills ?? []).map((s) => ({
+  const skillsWithAccess = agentSkillsData?.skills ?? [];
+  const skills: AvailableSkill[] = skillsWithAccess.map((s) => ({
     name: s.name,
     description: s.description,
     isPaperclipManaged: false,
   }));
+  const skillAgentsMap = new Map(skillsWithAccess.map((s) => [s.name, s.agents]));
   const activeSkill = selectedSkill ?? skills[0]?.name ?? null;
 
   const { data: contentData, isLoading: contentLoading, error: contentError } = useQuery({
@@ -1751,7 +1757,8 @@ function SkillsTab({ agent }: { agent: Agent }) {
           <>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 pt-1">{skills.length} skills</div>
             {skills.map((skill) => (
-              <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing} isAgentSkill
+              <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing}
+                agents={skillAgentsMap.get(skill.name) ?? []}
                 onSelect={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }} />
             ))}
           </>
@@ -1773,6 +1780,17 @@ function SkillsTab({ agent }: { agent: Agent }) {
               <div>
                 <h3 className="text-sm font-medium font-mono">{activeSkill}</h3>
                 <p className="text-xs text-muted-foreground font-mono break-all">{contentData.path}</p>
+                {(() => {
+                  const agents = skillAgentsMap.get(activeSkill) ?? [];
+                  return agents.length > 0 ? (
+                    <div className="flex items-center gap-1 mt-1 flex-wrap">
+                      <span className="text-[10px] text-muted-foreground">Used by:</span>
+                      {agents.map((a) => (
+                        <Badge key={a.id} variant="outline" className="text-[10px] px-1.5 py-0 h-4">{a.name}</Badge>
+                      ))}
+                    </div>
+                  ) : null;
+                })()}
               </div>
               <div className="flex items-center gap-2">
                 {!editing && (

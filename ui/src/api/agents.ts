@@ -147,7 +147,7 @@ export const agentsApi = {
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
   agentSkills: (id: string, companyId?: string) =>
-    api.get<{ agentId: string; agentName: string; skills: { name: string; description: string }[] }>(
+    api.get<{ agentId: string; agentName: string; skills: AgentSkillWithAccess[] }>(
       agentPath(id, companyId, "/skills"),
     ),
   getSkillContent: (skillName: string) =>
@@ -196,6 +196,12 @@ export interface AvailableSkill {
   name: string;
   description: string;
   isPaperclipManaged: boolean;
+}
+
+export interface AgentSkillWithAccess {
+  name: string;
+  description: string;
+  agents: { id: string; name: string; icon: string | null }[];
 }
 
 export interface SkillRevision {
