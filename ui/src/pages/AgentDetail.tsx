@@ -1608,6 +1608,29 @@ function InstructionsTab({ agent, companyId }: { agent: Agent; companyId?: strin
   );
 }
 
+function SkillSidebarItem({ skill, activeSkill, editing, isAgentSkill, onSelect }: {
+  skill: AvailableSkill; activeSkill: string | null; editing: boolean; isAgentSkill: boolean; onSelect: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "w-full text-left px-2 py-1.5 rounded-md text-sm truncate flex items-center gap-1.5",
+        activeSkill === skill.name ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+        editing && activeSkill !== skill.name && "opacity-50 cursor-not-allowed",
+      )}
+      disabled={editing && activeSkill !== skill.name}
+      onClick={onSelect}
+    >
+      <span className="font-mono text-xs truncate flex-1">{skill.name}</span>
+      {skill.isPaperclipManaged ? (
+        <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 shrink-0">Built-in</Badge>
+      ) : isAgentSkill ? (
+        <Badge variant="default" className="text-[10px] px-1 py-0 h-4 shrink-0 bg-blue-600">Agent</Badge>
+      ) : null}
+    </button>
+  );
+}
+
 function SkillsTab({ agent }: { agent: Agent }) {
   const queryClient = useQueryClient();
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
@@ -1624,7 +1647,17 @@ function SkillsTab({ agent }: { agent: Agent }) {
     queryKey: queryKeys.skills.available,
     queryFn: () => agentsApi.availableSkills(),
   });
-  const skills = skillsData?.skills ?? [];
+  const { data: agentSkillsData } = useQuery({
+    queryKey: queryKeys.agents.skills(agent.id),
+    queryFn: () => agentsApi.agentSkills(agent.id),
+  });
+
+  const allSkills = skillsData?.skills ?? [];
+  const agentSkillNames = new Set((agentSkillsData?.skills ?? []).map((s) => s.name));
+  // Show agent skills first, then remaining global skills
+  const agentSkills = allSkills.filter((s) => agentSkillNames.has(s.name));
+  const globalOnlySkills = allSkills.filter((s) => !agentSkillNames.has(s.name));
+  const skills = [...agentSkills, ...globalOnlySkills];
   const activeSkill = selectedSkill ?? skills[0]?.name ?? null;
 
   const { data: contentData, isLoading: contentLoading, error: contentError } = useQuery({
@@ -1720,21 +1753,26 @@ function SkillsTab({ agent }: { agent: Agent }) {
         ) : skills.length === 0 ? (
           <p className="text-xs text-muted-foreground px-2">No skills found.</p>
         ) : (
-          skills.map((skill) => (
-            <button
-              key={skill.name}
-              className={cn(
-                "w-full text-left px-2 py-1.5 rounded-md text-sm truncate flex items-center gap-1.5",
-                activeSkill === skill.name ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-                editing && activeSkill !== skill.name && "opacity-50 cursor-not-allowed",
-              )}
-              disabled={editing && activeSkill !== skill.name}
-              onClick={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }}
-            >
-              <span className="font-mono text-xs truncate flex-1">{skill.name}</span>
-              {skill.isPaperclipManaged && <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 shrink-0">Built-in</Badge>}
-            </button>
-          ))
+          <>
+            {agentSkills.length > 0 && (
+              <>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 pt-1">Agent skills ({agentSkills.length})</div>
+                {agentSkills.map((skill) => (
+                  <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing} isAgentSkill
+                    onSelect={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }} />
+                ))}
+              </>
+            )}
+            {globalOnlySkills.length > 0 && (
+              <>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 pt-2">Global skills ({globalOnlySkills.length})</div>
+                {globalOnlySkills.map((skill) => (
+                  <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing} isAgentSkill={false}
+                    onSelect={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }} />
+                ))}
+              </>
+            )}
+          </>
         )}
       </div>
 

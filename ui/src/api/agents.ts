@@ -146,6 +146,10 @@ export const agentsApi = {
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  agentSkills: (id: string, companyId?: string) =>
+    api.get<{ agentId: string; agentName: string; skills: { name: string; description: string }[] }>(
+      agentPath(id, companyId, "/skills"),
+    ),
   getSkillContent: (skillName: string) =>
     api.get<{ name: string; path: string; content: string; isPaperclipManaged: boolean }>(
       `/skills/${encodeURIComponent(skillName)}/content`,
