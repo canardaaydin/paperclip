@@ -1378,41 +1378,10 @@ export function agentRoutes(db: Db) {
       ? adapterConfig.instructionsFilePath.trim()
       : null;
 
-    const agentSkills: { name: string; description: string }[] = [];
-    if (instrPath) {
-      // Walk up from the instructions file to find a skills/ directory
-      let dir = path.dirname(instrPath);
-      for (let i = 0; i < 5; i++) {
-        const candidate = path.join(dir, "skills");
-        try {
-          const stat = await fs.stat(candidate);
-          if (stat.isDirectory()) {
-            const entries = await fs.readdir(candidate, { withFileTypes: true });
-            for (const entry of entries) {
-              if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-              if (entry.name.startsWith(".")) continue;
-              let description = "";
-              try {
-                const md = await fs.readFile(path.join(candidate, entry.name, "SKILL.md"), "utf8");
-                const fmMatch = md.replace(/\r\n/g, "\n").match(/^---\n([\s\S]*?)\n---/);
-                if (fmMatch) {
-                  const descMatch = fmMatch[1].match(/^description:\s*(?:>\s*\n((?:\s{2,}[^\n]*\n?)+)|["']?(.*?)["']?\s*$)/m);
-                  if (descMatch) description = (descMatch[1] ?? descMatch[2] ?? "").split("\n").map((l: string) => l.trim()).filter(Boolean).join(" ");
-                }
-              } catch { /* no SKILL.md */ }
-              agentSkills.push({ name: entry.name, description });
-            }
-            break;
-          }
-        } catch { /* skip */ }
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    }
+    const { resolveAgentSkills } = await import("../services/skills.js");
+    const skills = await resolveAgentSkills(instrPath) ?? [];
 
-    agentSkills.sort((a, b) => a.name.localeCompare(b.name));
-    res.json({ agentId: agent.id, agentName: agent.name, skills: agentSkills });
+    res.json({ agentId: agent.id, agentName: agent.name, skills });
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

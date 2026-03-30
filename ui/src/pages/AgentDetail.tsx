@@ -1643,21 +1643,16 @@ function SkillsTab({ agent }: { agent: Agent }) {
   const [newSkillName, setNewSkillName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const { data: skillsData, isLoading: skillsLoading } = useQuery({
-    queryKey: queryKeys.skills.available,
-    queryFn: () => agentsApi.availableSkills(),
-  });
-  const { data: agentSkillsData } = useQuery({
+  const { data: agentSkillsData, isLoading: skillsLoading } = useQuery({
     queryKey: queryKeys.agents.skills(agent.id),
     queryFn: () => agentsApi.agentSkills(agent.id),
   });
 
-  const allSkills = skillsData?.skills ?? [];
-  const agentSkillNames = new Set((agentSkillsData?.skills ?? []).map((s) => s.name));
-  // Show agent skills first, then remaining global skills
-  const agentSkills = allSkills.filter((s) => agentSkillNames.has(s.name));
-  const globalOnlySkills = allSkills.filter((s) => !agentSkillNames.has(s.name));
-  const skills = [...agentSkills, ...globalOnlySkills];
+  const skills: AvailableSkill[] = (agentSkillsData?.skills ?? []).map((s) => ({
+    name: s.name,
+    description: s.description,
+    isPaperclipManaged: false,
+  }));
   const activeSkill = selectedSkill ?? skills[0]?.name ?? null;
 
   const { data: contentData, isLoading: contentLoading, error: contentError } = useQuery({
@@ -1751,27 +1746,14 @@ function SkillsTab({ agent }: { agent: Agent }) {
         {skillsLoading ? (
           <div className="flex items-center justify-center py-4"><Loader2 className="h-4 w-4 animate-spin" /></div>
         ) : skills.length === 0 ? (
-          <p className="text-xs text-muted-foreground px-2">No skills found.</p>
+          <p className="text-xs text-muted-foreground px-2">No skills found for this agent.</p>
         ) : (
           <>
-            {agentSkills.length > 0 && (
-              <>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 pt-1">Agent skills ({agentSkills.length})</div>
-                {agentSkills.map((skill) => (
-                  <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing} isAgentSkill
-                    onSelect={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }} />
-                ))}
-              </>
-            )}
-            {globalOnlySkills.length > 0 && (
-              <>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 pt-2">Global skills ({globalOnlySkills.length})</div>
-                {globalOnlySkills.map((skill) => (
-                  <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing} isAgentSkill={false}
-                    onSelect={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }} />
-                ))}
-              </>
-            )}
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-2 pt-1">{skills.length} skills</div>
+            {skills.map((skill) => (
+              <SkillSidebarItem key={skill.name} skill={skill} activeSkill={activeSkill} editing={editing} isAgentSkill
+                onSelect={() => { if (!editing) { setSelectedSkill(skill.name); setShowHistory(false); setComparingRevisionId(null); } }} />
+            ))}
           </>
         )}
       </div>

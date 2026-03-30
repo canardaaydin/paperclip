@@ -247,35 +247,25 @@ export function chatRoutes(db: Db) {
         }
       }
 
-      // Resolve agent skills directory: look for a skills/ dir as sibling of the
-      // agents/ directory (e.g. /opt/agent-instructions/GTM-multi-agent-v2/skills/)
+      // Resolve agent skills directory and build a temp .claude/skills/ for --add-dir
       let skillsAddDir: string | null = null;
       if (instrPath) {
-        // Walk up from the instructions file to find the repo root with a skills/ dir
-        let dir = path.dirname(instrPath);
-        for (let i = 0; i < 5; i++) {
-          const candidate = path.join(dir, "skills");
-          const hasSkills = await fs.stat(candidate).then(s => s.isDirectory()).catch(() => false);
-          if (hasSkills) {
-            // Build a temp .claude/skills/ dir with symlinks so --add-dir works
-            if (!tempDir) tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-chat-"));
-            const dotClaudeSkills = path.join(tempDir, ".claude", "skills");
-            await fs.mkdir(dotClaudeSkills, { recursive: true });
-            const entries = await fs.readdir(candidate, { withFileTypes: true });
-            for (const entry of entries) {
-              if (entry.isDirectory()) {
-                await fs.symlink(
-                  path.join(candidate, entry.name),
-                  path.join(dotClaudeSkills, entry.name),
-                );
-              }
+        const { resolveSkillsDirForInstructionsPath } = await import("../services/skills.js");
+        const skillsDir = await resolveSkillsDirForInstructionsPath(instrPath);
+        if (skillsDir) {
+          if (!tempDir) tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-chat-"));
+          const dotClaudeSkills = path.join(tempDir, ".claude", "skills");
+          await fs.mkdir(dotClaudeSkills, { recursive: true });
+          const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              await fs.symlink(
+                path.join(skillsDir, entry.name),
+                path.join(dotClaudeSkills, entry.name),
+              );
             }
-            skillsAddDir = tempDir;
-            break;
           }
-          const parent = path.dirname(dir);
-          if (parent === dir) break;
-          dir = parent;
+          skillsAddDir = tempDir;
         }
       }
 
